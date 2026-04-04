@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SCM — Historical Data Explorer</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+// Prevent "google is not defined" crash if Google's server
+// tries to call its default handler instead of our callback
+window.google = window.google || {
+  visualization: {
+    Query: {
+      setResponse: function(r) { console.warn('Google default handler called:', r); }
+    }
+  }
+};
+</script>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; font-family: 'Segoe UI', sans-serif; }
+body { background: #f5f7fa; color: #1a1a2e; padding: 20px; min-height: 100vh; }
+
+.header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 20px; }
+.title { font-size: 24px; font-weight: 700; color: #1a1a2e; }
+.subtitle { font-size: 13px; color: #666; margin-top: 4px; }
+
+.cards { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+.card { background: #fff; border-radius: 12px; padding: 16px 20px; flex: 1; min-width: 160px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.08); border: 1px solid #e8eaf0; }
+.card .lbl { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+.card .val { font-size: 22px; font-weight: 700; color: #1a1a2e; margin: 6px 0 3px; }
+.card .rng { font-size: 11px; color: #bbb; }
+
+.fbox { background: #fff; border-radius: 12px; padding: 16px; margin-bottom: 16px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.08); border: 1px solid #e8eaf0; }
+.frow { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin-bottom: 12px; }
+.frow:last-child { margin-bottom: 0; }
+.fg label { font-size: 11px; color: #888; display: block; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+.fg input, .fg select { background: #f5f7fa; border: 1px solid #dde1ec; color: #1a1a2e;
+        padding: 7px 12px; border-radius: 8px; font-size: 13px; outline: none; }
+.fg input:focus, .fg select:focus { border-color: #4f8ef7; background: #fff; }
+.divider { width: 100%; height: 1px; background: #eef0f6; margin: 12px 0; }
+
+.btn { padding: 8px 18px; border-radius: 8px; border: none; cursor: pointer; font-size: 13px; font-weight: 600; transition: opacity 0.2s; }
+.btn:hover { opacity: 0.85; }
+.btn-primary { background: #4f8ef7; color: #fff; }
+.btn-outline { background: transparent; border: 1px solid #ccc; color: #666; }
+.btn-success { background: #22c55e; color: #fff; }
+
+.params { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.pbtn { padding: 6px 16px; border-radius: 20px; border: 2px solid; font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.2s; }
+
+.charts { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+.cbox { background: #fff; border-radius: 12px; padding: 16px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.08); border: 1px solid #e8eaf0; }
+.cbox.full { grid-column: 1 / -1; }
+.ctitle { font-size: 13px; font-weight: 600; margin-bottom: 12px; color: #444; }
+canvas { max-height: 240px; }
+
+.tbox { background: #fff; border-radius: 12px; padding: 16px;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.08); border: 1px solid #e8eaf0; }
+.thead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; flex-wrap: wrap; gap: 8px; }
+.ttitle { font-size: 13px; font-weight: 600; color: #444; }
+.tscroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 1100px; }
+th { background: #f5f7fa; color: #666; padding: 10px 12px; text-align: left;
+     border-bottom: 2px solid #e8eaf0; white-space: nowrap; font-weight: 600; }
+td { padding: 8px 12px; border-bottom: 1px solid #f0f2f8; color: #333; white-space: nowrap; }
+tr:hover td { background: #f9faff; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 600; }
+.badge-s1 { background: #e6faf0; color: #22c55e; }
+.loading { text-align: center; padding: 40px; color: #999; font-size: 14px; }
+.afl { font-size: 11px; color: #f59e0b; margin-top: 10px; }
+.err-box { background: #fff5f5; border: 1px solid #fecaca; border-radius: 10px;
+           padding: 20px; color: #dc2626; font-size: 13px; line-height: 2; }
+
+@media (max-width: 768px) {
+  .charts { grid-template-columns: 1fr; }
+  .cbox.full { grid-column: 1; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="title">&#128202; SCM &#8212; Historical Data Explorer</div>
+    <div class="subtitle">Compressed Air &amp; Spinning System &#8212; Live data from Google Sheets (April 2025)</div>
+  </div>
+  <span id="sync" style="font-size:12px;font-weight:600;color:#f59e0b">&#9679; Connecting...</span>
+</div>
+
+<!-- Summary Cards -->
+<div class="cards">
+  <div class="card"><div class="lbl">Avg Before Dryer Pressure</div><div class="val" id="avgBefore">&#8212;</div><div class="rng" id="rangeBefore"></div></div>
+  <div class="card"><div class="lbl">Avg After Dryer Pressure</div><div class="val" id="avgAfter">&#8212;</div><div class="rng" id="rangeAfter"></div></div>
+  <div class="card"><div class="lbl">Avg Dew Point</div><div class="val" id="avgDew">&#8212;</div><div class="rng" id="rangeDew"></div></div>
+  <div class="card"><div class="lbl">Avg Compressor Flow</div><div class="val" id="avgFlow">&#8212;</div><div class="rng" id="rangeFlow"></div></div>
+  <div class="card"><div class="lbl">Avg Power 1</div><div class="val" id="avgPow1">&#8212;</div><div class="rng" id="rangePow1"></div></div>
+  <div class="card"><div class="lbl">Avg Power 2</div><div class="val" id="avgPow2">&#8212;</div><div class="rng" id="rangePow2"></div></div>
+</div>
+
+<!-- Filters -->
+<div class="fbox">
+  <div class="frow">
+    <div class="fg">
+      <label>&#128197; Date From</label>
+      <input type="date" id="from">
+    </div>
+    <div class="fg">
+      <label>&#128197; Date To</label>
+      <input type="date" id="to">
+    </div>
+    <div class="fg">
+      <label>&#9889; Quick Range</label>
+      <select id="qr" onchange="applyQuickRange()">
+        <option value="">Custom</option>
+        <option value="7">Last 7 Days</option>
+        <option value="30">Last 30 Days</option>
+        <option value="90">Last 90 Days</option>
+        <option value="180">Last 6 Months</option>
+        <option value="all" selected>All Time</option>
+      </select>
+    </div>
+    <div class="fg">
+      <label>&#128202; Aggregation</label>
+      <select id="agg">
+        <option value="raw">Raw</option>
+        <option value="hourly">Hourly Avg</option>
+        <option value="daily" selected>Daily Avg</option>
+      </select>
+    </div>
+  </div>
+  <div class="divider"></div>
+  <div class="frow">
+    <div class="fg">
+      <label>&#128270; Filter Column</label>
+      <select id="fcol">
+        <option value="">None</option>
+        <option value="Compressor Flow">Compressor Flow</option>
+        <option value="Spinning Hall 3">Spinning Hall 3</option>
+        <option value="Autoconer Hall">Autoconer Hall</option>
+        <option value="Spinning Hall 1&2">Spinning Hall 1&amp;2</option>
+        <option value="Power 1">Power 1</option>
+        <option value="Power 2">Power 2</option>
+        <option value="Before Dryer Pressure">Before Dryer Pressure</option>
+        <option value="After Dryer Pressure">After Dryer Pressure</option>
+        <option value="Dew Point">Dew Point</option>
+        <option value="Autoconer Pressure">Autoconer Pressure</option>
+      </select>
+    </div>
+    <div class="fg">
+      <label>Condition</label>
+      <select id="fop">
+        <option value="gt">greater than</option>
+        <option value="lt">less than</option>
+        <option value="gte">greater or equal</option>
+        <option value="lte">less or equal</option>
+        <option value="eq">equal to</option>
+      </select>
+    </div>
+    <div class="fg">
+      <label>Value</label>
+      <input type="number" id="fval" placeholder="e.g. 5.8" step="any" style="width:110px">
+    </div>
+    <div class="fg" style="display:flex;gap:8px;align-items:flex-end">
+      <button class="btn btn-primary" onclick="applyFilters()">Apply Filters</button>
+      <button class="btn btn-outline" onclick="doReset()">Reset</button>
+      <button class="btn btn-success" onclick="doExport()">&#11015; Export CSV</button>
+    </div>
+  </div>
+  <div class="afl" id="afl"></div>
+</div>
+
+<!-- Parameter Toggle Buttons -->
+<div class="params" id="params"></div>
+
+<!-- Charts -->
+<div class="charts">
+  <div class="cbox"><div class="ctitle">Pressure Trends (Before Dryer / After Dryer / Autoconer Pressure)</div><canvas id="pressChart"></canvas></div>
+  <div class="cbox"><div class="ctitle">Dew Point Trend</div><canvas id="dewChart"></canvas></div>
+  <div class="cbox"><div class="ctitle">Flow Trends (Compressor / Autoconer Hall / Spinning Halls)</div><canvas id="flowChart"></canvas></div>
+  <div class="cbox"><div class="ctitle">Power Trends (Power 1 &amp; Power 2)</div><canvas id="powChart"></canvas></div>
+</div>
+
+<!-- Data Table -->
+<div class="tbox">
+  <div class="thead">
+    <span class="ttitle" id="ttitle">Data Table</span>
+    <span style="font-size:11px;color:#888">
+      <span class="badge badge-s1">April 2025</span> Live Feed
+    </span>
+  </div>
+  <div class="tscroll">
+    <div id="table"><div class="loading">&#9203; Loading data...</div></div>
+  </div>
+</div>
+
+<script>
+// ── CONFIG ──────────────────────────────────────────────────────────────────
+var SHEET_ID = '1HRcb18-Hr4OTiiKcIv62-MlPqM7ws3JQ4sHnGG70PjU';
+var SHEETS = [
+  { name: 'April 2025', gid: '0', source: 'April 2025' }
+];
+
+// These column names must exactly match the header row in your Google Sheet
+// Sheet column names (as they appear in Google Sheet header row)
+var COL_MAP = {
+  'group1':  'Compressor Flow',
+  'group2':  'Spinning Hall 3',
+  'group3':  'Autoconer Hall',
+  'group4':  'Spinning Hall 1&2',
+  // group5 skipped (duplicate of group2)
+  'group6':  'Power 1',
+  'group7':  'Power 2',
+  'group8':  'Before Dryer Pressure',
+  'group9':  'After Dryer Pressure',
+  'group10': 'Dew Point',
+  'group11': 'Autoconer Pressure'
+};
+
+var COLS = [
+  'Compressor Flow',
+  'Spinning Hall 3',
+  'Autoconer Hall',
+  'Spinning Hall 1&2',
+  'Power 1',
+  'Power 2',
+  'Before Dryer Pressure',
+  'After Dryer Pressure',
+  'Dew Point',
+  'Autoconer Pressure'
+];
+
+var PARAMS_CFG = [
+  { key: 'Compressor Flow',       label: 'Compressor Flow',       color: '#4f8ef7' },
+  { key: 'Spinning Hall 3',       label: 'Spinning Hall 3',       color: '#a78bfa' },
+  { key: 'Autoconer Hall',        label: 'Autoconer Hall',        color: '#f97316' },
+  { key: 'Spinning Hall 1&2',     label: 'Spinning Hall 1&2',     color: '#06b6d4' },
+  { key: 'Power 1',               label: 'Power 1',               color: '#ef4444' },
+  { key: 'Power 2',               label: 'Power 2',               color: '#f59e0b' },
+  { key: 'Before Dryer Pressure', label: 'Before Dryer Pressure', color: '#6366f1' },
+  { key: 'After Dryer Pressure',  label: 'After Dryer Pressure',  color: '#22c55e' },
+  { key: 'Dew Point',             label: 'Dew Point',             color: '#16a34a' },
+  { key: 'Autoconer Pressure',    label: 'Autoconer Pressure',    color: '#ec4899' }
+];
+
+var activeParams = {};
+PARAMS_CFG.forEach(function(p){ activeParams[p.key] = true; });
+var allData = [], filteredData = [];
+var pressChart, dewChart, flowChart, powChart;
+
+// ── Parameter Toggle Buttons ────────────────────────────────────────────────
+var pbDiv = document.getElementById('params');
+PARAMS_CFG.forEach(function(p){
+  var btn = document.createElement('button');
+  btn.className = 'pbtn';
+  btn.textContent = p.label;
+  btn.style.cssText = 'border-color:'+p.color+';background:'+p.color+';color:#fff';
+  btn.onclick = function(){
+    if(activeParams[p.key]){
+      activeParams[p.key] = false;
+      btn.style.background = 'transparent';
+      btn.style.color = p.color;
+    } else {
+      activeParams[p.key] = true;
+      btn.style.background = p.color;
+      btn.style.color = '#fff';
+    }
+    renderAll(aggregate(filteredData));
+  };
+  pbDiv.appendChild(btn);
+});
+
+// ── Fetch Sheet Data ───────────────────────────────────────────────────────────────
+// Strategy: fetch CSV directly — no JSONP/callback issues
+function gvizFetch(gid, sourceName) {
+  return fetchCSV(gid, sourceName);
+}
+
+function fetchCSV(gid, sourceName) {
+  // Direct CSV export — works as long as sheet is public (Anyone with link = Viewer)
+  var url = 'https://docs.google.com/spreadsheets/d/' + SHEET_ID +
+            '/export?format=csv&gid=' + gid + '&t=' + Date.now();
+  return fetch(url)
+    .then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' for sheet: ' + sourceName);
+      return r.text();
+    })
+    .then(function(csv) {
+      var rows = parseCSV(csv, sourceName);
+      if (rows.length === 0) throw new Error('No rows parsed from: ' + sourceName);
+      return rows;
+    });
+}
+
+// ── Parse CSV ──────────────────────────────────────────────────────────────────────
+// ── Timestamp Parser (handles DD/MM/YYYY HH:MM:SS and other formats) ─────────
+function parseTimestamp(str) {
+  if (!str || !str.trim()) return null;
+  str = str.trim();
+
+  // Format: 25/04/2025, 17:26:00  or  25/04/2025 17:26:00
+  var m = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})[,\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (m) {
+    return new Date(+m[3], +m[2]-1, +m[1], +m[4], +m[5], +(m[6]||0));
+  }
+
+  // Format: 2025-04-25 17:26:00  (ISO-like)
+  var m2 = str.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2}))?/);
+  if (m2) {
+    return new Date(+m2[1], +m2[2]-1, +m2[3], +m2[4], +m2[5], +(m2[6]||0));
+  }
+
+  // Format: 25/04/2025 (date only)
+  var m3 = str.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (m3) {
+    return new Date(+m3[3], +m3[2]-1, +m3[1]);
+  }
+
+  // Fallback: let JS try
+  var d = new Date(str);
+  return isNaN(d) ? null : d;
+}
+
+function parseCSV(csv, sourceName) {
+  var lines = csv.replace(/\r/g, '').split('\n').filter(function(l){ return l.trim(); });
+  if (lines.length < 2) throw new Error('Empty CSV from: ' + sourceName);
+
+  function splitLine(line) {
+    var res = [], cur = '', inQ = false;
+    for (var i = 0; i < line.length; i++) {
+      var ch = line[i];
+      if (ch === '"') { inQ = !inQ; }
+      else if (ch === ',' && !inQ) { res.push(cur); cur = ''; }
+      else { cur += ch; }
+    }
+    res.push(cur);
+    return res.map(function(v){ return v.replace(/^"|"$/g, '').trim(); });
+  }
+
+  var headers = splitLine(lines[0]);
+  var rows = [];
+  for (var i = 1; i < lines.length; i++) {
+    var cells = splitLine(lines[i]);
+    if (!cells[0] || !cells[0].trim()) continue;
+    var obj = { _source: sourceName };
+    headers.forEach(function(h, idx){ obj[h] = cells[idx] !== undefined ? cells[idx] : ''; });
+    // Normalize timestamp — always put in obj.Timestamp
+    if (!obj['Timestamp'] && headers[0]) obj['Timestamp'] = obj[headers[0]];
+    if (obj['Timestamp'] && typeof obj['Timestamp'] === 'string') {
+      obj['Timestamp'] = parseTimestamp(obj['Timestamp']);
+    }
+    // Remap group1..group11 to friendly names, skip group5
+    var remapped = { _source: obj._source, Timestamp: obj['Timestamp'] };
+    Object.keys(COL_MAP).forEach(function(grp) {
+      var friendlyName = COL_MAP[grp];
+      remapped[friendlyName] = obj[grp] !== undefined ? obj[grp] : '';
+    });
+    rows.push(remapped);
+  }
+  return rows;
+}
+// ── Timestamp Helpers ───────────────────────────────────────────────────────
+function fmtTS(ts) {
+  if (!ts) return '\u2014';
+  var d = (ts instanceof Date) ? ts : new Date(ts);
+  if (isNaN(d)) return String(ts);
+  return d.getFullYear() + '-'
+    + (d.getMonth()+1).toString().padStart(2,'0') + '-'
+    + d.getDate().toString().padStart(2,'0') + ' '
+    + d.getHours().toString().padStart(2,'0') + ':'
+    + d.getMinutes().toString().padStart(2,'0');
+}
+
+function getTS(row) {
+  var ts = row['Timestamp'];
+  if (!ts) return null;
+  if (ts instanceof Date) return isNaN(ts) ? null : ts;
+  // Try parsing string timestamps
+  var parsed = parseTimestamp(String(ts));
+  return parsed;
+}
+
+// ── Main Fetch ──────────────────────────────────────────────────────────────
+function doFetch() {
+  document.getElementById('sync').textContent = '\u25cf Fetching...';
+  document.getElementById('sync').style.color = '#f59e0b';
+  document.getElementById('table').innerHTML = '<div class="loading">\u23f3 Loading from Google Sheets...</div>';
+
+  Promise.all(SHEETS.map(function(s){ return gvizFetch(s.gid, s.source); }))
+    .then(function(results){
+      allData = [];
+      results.forEach(function(rows){ allData = allData.concat(rows); });
+      allData.sort(function(a,b){
+        var ta = getTS(a), tb = getTS(b);
+        return (ta||0) - (tb||0);
+      });
+
+      document.getElementById('sync').textContent = '\u25cf Synced (' + allData.length + ' rows)';
+      document.getElementById('sync').style.color = '#22c55e';
+      applyFilters();
+    })
+    .catch(function(err){
+      document.getElementById('sync').textContent = '\u25cf Error';
+      document.getElementById('sync').style.color = '#ef4444';
+      document.getElementById('table').innerHTML =
+        '<div class="err-box">' +
+        '\u274c <strong>' + err.message + '</strong><br><br>' +
+        '\ud83d\udc49 To fix this:<br>' +
+        '1. Open your Google Sheet<br>' +
+        '2. Click <strong>Share</strong> \u2192 <strong>Change to anyone with the link</strong> \u2192 set to <strong>Viewer</strong><br>' +
+        '3. Refresh this page<br><br>' +
+        'If already public, open F12 Console and share the exact error for more help.' +
+        '</div>';
+    });
+}
+
+// ── Client-side Filter ──────────────────────────────────────────────────────
+function applyFilters() {
+  var from = document.getElementById('from').value;
+  var to   = document.getElementById('to').value;
+  var col  = document.getElementById('fcol').value;
+  var op   = document.getElementById('fop').value;
+  var val  = parseFloat(document.getElementById('fval').value);
+
+  filteredData = allData.filter(function(row){
+    if (from || to) {
+      var ts = getTS(row);
+      if (!ts || isNaN(ts)) return false;
+      if (from && ts < new Date(from))             return false;
+      if (to   && ts > new Date(to + 'T23:59:59')) return false;
+    }
+    if (col && !isNaN(val)) {
+      var rv = parseFloat(row[col]);
+      if (isNaN(rv)) return false;
+      if (op==='gt'  && rv <= val) return false;
+      if (op==='lt'  && rv >= val) return false;
+      if (op==='gte' && rv <  val) return false;
+      if (op==='lte' && rv >  val) return false;
+      if (op==='eq'  && rv !== val) return false;
+    }
+    return true;
+  });
+
+  updateActiveLabel();
+  var d = aggregate(filteredData);
+  updateCards(d);
+  renderAll(d);
+  renderTable(d);
+}
+
+function updateActiveLabel() {
+  var parts = [];
+  var from = document.getElementById('from').value;
+  var to   = document.getElementById('to').value;
+  if (from || to) parts.push('Date: ' + (from||'...') + ' \u2192 ' + (to||'...'));
+  var col = document.getElementById('fcol').value;
+  var val = document.getElementById('fval').value;
+  var opL = {gt:'>',lt:'<',gte:'>=',lte:'<=',eq:'='};
+  if (col && val) parts.push(col + ' ' + opL[document.getElementById('fop').value] + ' ' + val);
+  document.getElementById('afl').textContent = parts.length ? '\ud83d\udd0d ' + parts.join(' | ') : '';
+}
+
+function applyQuickRange() {
+  var v = document.getElementById('qr').value;
+  if (!v || v === 'all') {
+    document.getElementById('from').value = '';
+    document.getElementById('to').value   = '';
+    if (allData.length) applyFilters();
+    return;
+  }
+  var toDate = new Date(), fromDate = new Date();
+  fromDate.setDate(fromDate.getDate() - parseInt(v));
+  document.getElementById('to').value   = toDate.toISOString().split('T')[0];
+  document.getElementById('from').value = fromDate.toISOString().split('T')[0];
+  if (allData.length) applyFilters();
+}
+
+function doReset() {
+  document.getElementById('qr').value   = 'all';
+  document.getElementById('agg').value  = 'daily';
+  document.getElementById('fcol').value = '';
+  document.getElementById('fval').value = '';
+  document.getElementById('from').value = '';
+  document.getElementById('to').value   = '';
+  document.getElementById('afl').textContent = '';
+  doFetch();
+}
+
+// ── Aggregation ─────────────────────────────────────────────────────────────
+function aggregate(data) {
+  var agg = document.getElementById('agg').value;
+  if (agg === 'raw') return data;
+  var groups = {};
+  data.forEach(function(row){
+    var ts = getTS(row);
+    if (!ts || isNaN(ts)) return;
+    var key = agg === 'hourly'
+      ? ts.getFullYear()+'-'+(ts.getMonth()+1).toString().padStart(2,'0')+'-'+ts.getDate().toString().padStart(2,'0')+'T'+ts.getHours().toString().padStart(2,'0')+':00'
+      : ts.getFullYear()+'-'+(ts.getMonth()+1).toString().padStart(2,'0')+'-'+ts.getDate().toString().padStart(2,'0');
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(row);
+  });
+  return Object.keys(groups).sort().map(function(k){
+    var rows = groups[k];
+    var avg = { Timestamp: k, _source: rows[0]._source };
+    COLS.forEach(function(c){
+      var vals = rows.map(function(r){ return parseFloat(r[c]); }).filter(function(v){ return !isNaN(v); });
+      avg[c] = vals.length ? (vals.reduce(function(a,b){ return a+b; },0)/vals.length).toFixed(2) : null;
+    });
+    return avg;
+  });
+}
+
+// ── Summary Cards ───────────────────────────────────────────────────────────
+function updateCards(data) {
+  function calc(col) {
+    var vals = data.map(function(r){ return parseFloat(r[col]); }).filter(function(v){ return !isNaN(v); });
+    if (!vals.length) return { avg:'\u2014', min:'\u2014', max:'\u2014' };
+    return {
+      avg: (vals.reduce(function(a,b){ return a+b; },0)/vals.length).toFixed(2),
+      min: Math.min.apply(null,vals).toFixed(2),
+      max: Math.max.apply(null,vals).toFixed(2)
+    };
+  }
+  function set(vid, rid, col, unit) {
+    var c = calc(col);
+    document.getElementById(vid).textContent = c.avg==='\u2014' ? '\u2014' : c.avg+' '+unit;
+    document.getElementById(rid).textContent = c.min==='\u2014' ? '' : 'Range: '+c.min+' \u2014 '+c.max;
+  }
+  set('avgBefore', 'rangeBefore', 'Before Dryer Pressure', 'bar');
+  set('avgAfter',  'rangeAfter',  'After Dryer Pressure',  'bar');
+  set('avgDew',    'rangeDew',    'Dew Point',             '\u00b0C');
+  set('avgFlow',   'rangeFlow',   'Compressor Flow',       'CFM');
+  set('avgPow1',   'rangePow1',   'Power 1',               'kW');
+  set('avgPow2',   'rangePow2',   'Power 2',               'kW');
+}
+
+// ── Charts ──────────────────────────────────────────────────────────────────
+function renderAll(data) {
+  var labels = data.map(function(r){
+    var ts = getTS(r);
+    return (ts && !isNaN(ts)) ? fmtTS(ts) : String(r.Timestamp);
+  });
+
+  function ds(col, color, yAxis) {
+    return {
+      label: col,
+      data: data.map(function(r){ return parseFloat(r[col])||null; }),
+      borderColor: color,
+      backgroundColor: color + '22',
+      borderWidth: 1.5,
+      pointRadius: 0,
+      tension: 0.3,
+      yAxisID: yAxis
+    };
+  }
+
+  var xS = { ticks:{ color:'#999', maxTicksLimit:10 }, grid:{ color:'#eee' } };
+  var yL = { type:'linear', position:'left',  ticks:{ color:'#999' }, grid:{ color:'#eee' } };
+  var yR = { type:'linear', position:'right', ticks:{ color:'#999' }, grid:{ drawOnChartArea:false } };
+
+  function bOpts(sc) {
+    return {
+      responsive: true,
+      maintainAspectRatio: true,
+      animation: false,
+      plugins: { legend: { labels: { color:'#555', font:{ size:11 } } } },
+      scales: sc
+    };
+  }
+
+  // Chart 1 — Pressure: Before Dryer, After Dryer, Autoconer Pressure
+  if (pressChart) pressChart.destroy();
+  var pSets = [];
+  if (activeParams['Before Dryer Pressure'])  pSets.push(ds('Before Dryer Pressure', '#6366f1', 'y'));
+  if (activeParams['After Dryer Pressure'])   pSets.push(ds('After Dryer Pressure',  '#22c55e', 'y'));
+  if (activeParams['Autoconer Pressure'])     pSets.push(ds('Autoconer Pressure',    '#ec4899', 'y1'));
+  pressChart = new Chart(document.getElementById('pressChart'),
+    { type:'line', data:{ labels:labels, datasets:pSets }, options:bOpts({ y:yL, y1:yR, x:xS }) });
+
+  // Chart 2 — Dew Point only
+  if (dewChart) dewChart.destroy();
+  var dSets = [];
+  if (activeParams['Dew Point']) dSets.push(ds('Dew Point', '#16a34a', 'y'));
+  dewChart = new Chart(document.getElementById('dewChart'),
+    { type:'line', data:{ labels:labels, datasets:dSets }, options:bOpts({ y:yL, x:xS }) });
+
+  // Chart 3 — Flow: Compressor Flow, Autoconer Hall, Spinning Hall 1&2, Spinning Hall 3
+  if (flowChart) flowChart.destroy();
+  var fSets = [];
+  if (activeParams['Compressor Flow'])    fSets.push(ds('Compressor Flow',    '#4f8ef7', 'y'));
+  if (activeParams['Autoconer Hall'])     fSets.push(ds('Autoconer Hall',     '#f97316', 'y'));
+  if (activeParams['Spinning Hall 1&2'])  fSets.push(ds('Spinning Hall 1&2',  '#06b6d4', 'y1'));
+  if (activeParams['Spinning Hall 3'])    fSets.push(ds('Spinning Hall 3',    '#a78bfa', 'y1'));
+  flowChart = new Chart(document.getElementById('flowChart'),
+    { type:'line', data:{ labels:labels, datasets:fSets }, options:bOpts({ y:yL, y1:yR, x:xS }) });
+
+  // Chart 4 — Power 1 & Power 2
+  if (powChart) powChart.destroy();
+  var pwSets = [];
+  if (activeParams['Power 1']) pwSets.push(ds('Power 1', '#ef4444', 'y'));
+  if (activeParams['Power 2']) pwSets.push(ds('Power 2', '#f59e0b', 'y1'));
+  powChart = new Chart(document.getElementById('powChart'),
+    { type:'line', data:{ labels:labels, datasets:pwSets }, options:bOpts({ y:yL, y1:yR, x:xS }) });
+}
+
+// ── Table ───────────────────────────────────────────────────────────────────
+function renderTable(data) {
+  var tableCols = ['Timestamp'].concat(COLS);
+  var show = data.slice(0, 200);
+  document.getElementById('ttitle').textContent =
+    'Data (showing ' + show.length + ' of ' + data.length + ' records)';
+
+  var html = '<table><tr><th>Source</th>' +
+    tableCols.map(function(c){ return '<th>' + c + '</th>'; }).join('') + '</tr>';
+
+  show.forEach(function(row){
+    html += '<tr><td><span class="badge badge-s1">April 2025</span></td>';
+    html += '<td>' + fmtTS(row['Timestamp']) + '</td>';
+    html += COLS.map(function(c){
+      var v = row[c];
+      return '<td>' + (v !== null && v !== '' && v !== undefined ? v : '\u2014') + '</td>';
+    }).join('');
+    html += '</tr>';
+  });
+
+  document.getElementById('table').innerHTML = html + '</table>';
+}
+
+// ── Export CSV ──────────────────────────────────────────────────────────────
+function doExport() {
+  var data = aggregate(filteredData);
+  var cols = ['Timestamp', '_source'].concat(COLS);
+  var csv = cols.join(',') + '\n';
+  data.forEach(function(row){
+    csv += cols.map(function(c){
+      var v = c === 'Timestamp' ? fmtTS(row[c]) : (row[c] != null ? row[c] : '');
+      return '"' + String(v).replace(/"/g,'""') + '"';
+    }).join(',') + '\n';
+  });
+  var a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'scm_historical_data.csv';
+  a.click();
+}
+
+// ── Init ────────────────────────────────────────────────────────────────────
+doFetch();
+</script>
+</body>
+</html>
