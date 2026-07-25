@@ -85,7 +85,7 @@ tr:hover td { background: #f9faff; }
 <div class="header">
   <div>
     <div class="title">&#128202; SCM &#8212; Historical Data Explorer</div>
-    <div class="subtitle">Compressed Air &amp; Spinning System &#8212; Live data from Google Sheets (April 2025)</div>
+    <div class="subtitle">Compressed Air &amp; Spinning System &#8212; WiseAir Archive &#8212; history from April 2025</div>
   </div>
   <span id="sync" style="font-size:12px;font-weight:600;color:#f59e0b">&#9679; Connecting...</span>
 </div>
@@ -164,7 +164,7 @@ tr:hover td { background: #f9faff; }
       <input type="number" id="fval" placeholder="e.g. 5.8" step="any" style="width:110px">
     </div>
     <div class="fg" style="display:flex;gap:8px;align-items:flex-end">
-      <button class="btn btn-primary" onclick="applyFilters()">Apply Filters</button>
+      <button class="btn btn-primary" onclick="doFetch()">Apply Filters</button>
       <button class="btn btn-outline" onclick="doReset()">Reset</button>
       <button class="btn btn-success" onclick="doExport()">&#11015; Export CSV</button>
     </div>
@@ -231,6 +231,21 @@ var COLS = [
   'Dew Point',
   'Autoconer Pressure'
 ];
+
+// ── WiseAir Archive API ─────────────────────────────────────────────
+var API_BASE = 'https://168-144-76-214.sslip.io';
+var DEVICE_MAP = {
+  'Compressor Flow':       {device:'SCM Compressor Room',       keys:'flow'},
+  'Spinning Hall 3':       {device:'SCM Spinning Hall 3',       keys:'flow'},
+  'Autoconer Hall':        {device:'SCM Autoconer Hall',        keys:'flow'},
+  'Spinning Hall 1&2':     {device:'SCM Spinning Hall 1 & 2',   keys:'flow'},
+  'Power 1':               {device:'SCM - Compressor 1 Power',  keys:'Power'},
+  'Power 2':               {device:'SCM - Compressor 2 Power',  keys:'Power'},
+  'Before Dryer Pressure': {device:'SCM Before Dryer Pressure', keys:'pressure'},
+  'After Dryer Pressure':  {device:'SCM After Dryer Pressure',  keys:'pressure'},
+  'Dew Point':             {device:'SCM Main Dew Point',        keys:'Dew Point'},
+  'Autoconer Pressure':    {device:'SCM Autoconer Pressure',    keys:'pressure'}
+};
 
 var PARAMS_CFG = [
   { key: 'Compressor Flow',       label: 'Compressor Flow',       color: '#4f8ef7' },
@@ -382,37 +397,55 @@ function getTS(row) {
   return parsed;
 }
 
-// ── Main Fetch ──────────────────────────────────────────────────────────────
+// -- Main Fetch (WiseAir Archive) --
+var _fetchGen = 0;
 function doFetch() {
+  var _gen = ++_fetchGen;
   document.getElementById('sync').textContent = '\u25cf Fetching...';
   document.getElementById('sync').style.color = '#f59e0b';
-  document.getElementById('table').innerHTML = '<div class="loading">\u23f3 Loading from Google Sheets...</div>';
+  document.getElementById('table').innerHTML = '<div class="loading">\u23f3 Loading from WiseAir archive...</div>';
 
-  Promise.all(SHEETS.map(function(s){ return gvizFetch(s.gid, s.source); }))
+  var fromV = document.getElementById('from').value;
+  var toV   = document.getElementById('to').value;
+  var toMs   = toV ? new Date(toV + 'T23:59:59').getTime() : Date.now();
+  var fromMs = fromV ? new Date(fromV).getTime() : (toMs - 7*86400000);
+
+  Promise.all(COLS.map(function(c){
+    var m = DEVICE_MAP[c];
+    if (!m) return Promise.resolve({col:c, data:[]});
+    var url = API_BASE + '/history?device=' + encodeURIComponent(m.device) +
+              '&keys=' + encodeURIComponent(m.keys) +
+              '&from=' + fromMs + '&to=' + toMs + '&bucket=auto';
+    return fetch(url, {cache:'no-store'})
+      .then(function(r){ if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); })
+      .then(function(j){ return {col:c, data:j.data||[]}; })
+      .catch(function(e){ console.warn(c, e.message); return {col:c, data:[]}; });
+  }))
     .then(function(results){
-      allData = [];
-      results.forEach(function(rows){ allData = allData.concat(rows); });
-      allData.sort(function(a,b){
-        var ta = getTS(a), tb = getTS(b);
-        return (ta||0) - (tb||0);
+      if (_gen !== _fetchGen) return;
+      var byTs = {};
+      results.forEach(function(res){
+        res.data.forEach(function(p){
+          var t = Math.round(p.ts/60000)*60000;
+          var row = byTs[t];
+          if (!row) { row = byTs[t] = { _source:'Archive', Timestamp:new Date(t) };
+            COLS.forEach(function(c){ row[c] = ''; }); }
+          if (p.value !== null && p.value !== undefined) row[res.col] = p.value;
+        });
       });
+      allData = Object.keys(byTs).map(function(k){ return byTs[k]; });
+      allData.sort(function(a,b){ return a.Timestamp - b.Timestamp; });
 
-      document.getElementById('sync').textContent = '\u25cf Synced (' + allData.length + ' rows)';
+      document.getElementById('sync').textContent = '\u25cf Synced (' + allData.length + ' rows) \u00b7 WiseAir archive';
       document.getElementById('sync').style.color = '#22c55e';
       applyFilters();
     })
     .catch(function(err){
+      if (_gen !== _fetchGen) return;
       document.getElementById('sync').textContent = '\u25cf Error';
       document.getElementById('sync').style.color = '#ef4444';
       document.getElementById('table').innerHTML =
-        '<div class="err-box">' +
-        '\u274c <strong>' + err.message + '</strong><br><br>' +
-        '\ud83d\udc49 To fix this:<br>' +
-        '1. Open your Google Sheet<br>' +
-        '2. Click <strong>Share</strong> \u2192 <strong>Change to anyone with the link</strong> \u2192 set to <strong>Viewer</strong><br>' +
-        '3. Refresh this page<br><br>' +
-        'If already public, open F12 Console and share the exact error for more help.' +
-        '</div>';
+        '<div class="err-box">\u274c <strong>' + err.message + '</strong></div>';
     });
 }
 
@@ -465,16 +498,16 @@ function updateActiveLabel() {
 function applyQuickRange() {
   var v = document.getElementById('qr').value;
   if (!v || v === 'all') {
-    document.getElementById('from').value = '';
-    document.getElementById('to').value   = '';
-    if (allData.length) applyFilters();
+    document.getElementById('from').value = '2025-04-25';
+    document.getElementById('to').value   = new Date().toISOString().split('T')[0];
+    doFetch();
     return;
   }
   var toDate = new Date(), fromDate = new Date();
   fromDate.setDate(fromDate.getDate() - parseInt(v));
   document.getElementById('to').value   = toDate.toISOString().split('T')[0];
   document.getElementById('from').value = fromDate.toISOString().split('T')[0];
-  if (allData.length) applyFilters();
+  doFetch();
 }
 
 function doReset() {
